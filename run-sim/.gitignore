@@ -1,6 +1,0 @@
-# run-sim 运行产物：记录、轨迹、档案都不入库
-data/
-__pycache__/
-*.pyc
-_preview_map.png
-_shots/

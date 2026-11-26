@@ -38,7 +38,7 @@ echo 正在生成证书（首次约 3~10 秒，需要本机有 openssl）...
 echo.
 
 pushd "%APP%"
-%PY% -u 工具\mitm_debug_proxy.py --init
+%PY% -u 程序\工具\mitm_debug_proxy.py --init
 set "RC=%ERRORLEVEL%"
 popd
 

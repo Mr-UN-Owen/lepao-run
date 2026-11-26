@@ -33,7 +33,7 @@ echo   启动后浏览器会自动打开；关掉本窗口即停止服务
 echo ============================================================
 echo.
 pushd "%APP%"
-%PY% -u webapp\server.py --port %PORT% --open
+%PY% -u 程序\webapp\server.py --port %PORT% --open
 popd
 echo.
 echo 服务已退出。浏览器里点不动，重新双击本文件即可。

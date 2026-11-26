@@ -23,7 +23,7 @@ if not defined PY (
 )
 
 pushd "%APP%"
-%PY% -u selfcheck.py
+%PY% -u 程序\selfcheck.py
 set "RC=%ERRORLEVEL%"
 popd
 echo.

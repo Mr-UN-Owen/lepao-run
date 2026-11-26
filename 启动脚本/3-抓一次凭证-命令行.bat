@@ -45,7 +45,7 @@ echo 然后回到本窗口按【回车】结束抓包。
 echo ============================================================
 echo.
 pushd "%APP%"
-%PY% -u 工具\capture_launcher.py --port %PORT%
+%PY% -u 程序\工具\capture_launcher.py --port %PORT%
 popd
 echo.
 echo 抓到的明文：程序\_private\capture_log.jsonl

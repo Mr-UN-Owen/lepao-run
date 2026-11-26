@@ -42,7 +42,7 @@ echo 关掉本窗口即停止服务。
 echo ============================================================
 echo.
 pushd "%APP%"
-%PY% -u webapp\server.py --port %PORT% --host 0.0.0.0
+%PY% -u 程序\webapp\server.py --port %PORT% --host 0.0.0.0
 popd
 echo.
 pause

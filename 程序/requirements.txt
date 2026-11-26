@@ -1,0 +1,7 @@
+pycryptodome>=3.19
+# 可选（真机 br 响应解码, 缺省退化为 gzip/deflate）:
+# brotli
+# 可选（h5 登录链验证码 OCR）:
+# ddddocr>=1.4
+# 可选（抓号链路: mitmproxy, 需单独安装命令行组件）:
+# mitmproxy>=10

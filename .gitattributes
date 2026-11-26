@@ -1,0 +1,13 @@
+# 行尾与二进制：保证换电脑 / 换系统 checkout 后 bat 仍是 CRLF，证书不被改行尾
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+
+*.docx  binary
+*.png   binary
+*.crt   binary
+*.key   binary
+*.pem   binary
+*.srl   binary

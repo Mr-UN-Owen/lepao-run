@@ -1,0 +1,46 @@
+# ============================================================
+# 运行时可写目录：只保留占位文件，其余都是本机私有数据
+# ============================================================
+__pycache__/
+*.pyc
+*.pyo
+
+程序/_private/*
+!程序/_private/.gitkeep
+
+# 本机抓包证书与私钥（步骤 0 现场生成；绝对不能提交）
+*.key
+*.pem
+*.csr
+*.srl
+
+# 进阶流程的本地配置与证据链
+程序/config.json
+程序/state.json
+程序/凭证.json
+程序/proxy_backup.json
+程序/proxy_backup.json.restored
+程序/logs/
+程序/flows/
+
+# 系统垃圾
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---- 大文件：永不入库（GitHub 单文件上限 100MB）----
+*.apk
+*.mp4
+*.mov
+*.avi
+*.zip
+*.7z
+_vendor/
+__pycache__/
+
+# ---- 本机私有材料：含真实凭证/抓包，绝不入库 ----
+_private/
+campus-run-lab/
+公大跑-虚拟定位跑步包/
+**/_private/

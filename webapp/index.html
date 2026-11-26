@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>乐跑控制台 · Lepao Console</title>
+<style>
+  :root{
+    --bg:#0a0e13; --panel:#121920; --panel2:#0e141b; --line:#1e2833;
+    --txt:#e6edf3; --dim:#8697a8; --accent:#3b82f6; --ok:#3fb950; --warn:#d29922; --err:#f85149;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1100px 560px at 12% -12%,#12202f 0%,var(--bg) 58%);
+       color:var(--txt);font:14px/1.55 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:#6ea8ff;text-decoration:none}
+  input,button,select{font:inherit;color:inherit}
+  input,select{width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);
+       background:var(--panel2);outline:none;transition:border-color .15s}
+  input:focus,select:focus{border-color:var(--accent)}
+  button{border:1px solid var(--line);background:#1a2330;padding:10px 16px;border-radius:9px;
+       cursor:pointer;font-weight:600;transition:background .15s,transform .08s}
+  button:hover{background:#22303f}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:#5b9bff;color:#fff}
+  button.primary:hover{background:#5b9bff}
+  button.danger{background:rgba(248,81,73,.12);border-color:rgba(248,81,73,.4);color:#ff9a92}
+
+  /* ---------- 登录 ---------- */
+  #login{min-height:100vh;display:grid;place-items:center;padding:24px}
+  .card{width:min(440px,100%);background:var(--panel);border:1px solid var(--line);
+        border-radius:16px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+  .card h1{margin:0;padding:22px 24px 6px;font-size:19px;letter-spacing:.3px}
+  .card .sub{padding:0 24px 18px;color:var(--dim);font-size:12.5px}
+  .card .body{padding:0 24px 22px;display:flex;flex-direction:column;gap:10px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .hint{font-size:12px;color:var(--dim)}
+  .err{color:#ff9a92;font-size:12.5px;min-height:1.2em}
+
+  /* ---------- 主界面 ---------- */
+  header.app{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line);
+       background:rgba(10,14,19,.9);backdrop-filter:blur(8px);position:sticky;top:0;z-index:9}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.2px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 12px var(--ok)}
+  .meta{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .chip{font:11px/1 var(--mono);color:var(--dim);border:1px solid var(--line);padding:6px 10px;
+        border-radius:999px;background:var(--panel2);white-space:nowrap}
+  main{display:grid;grid-template-columns:280px minmax(0,1fr) 300px;gap:14px;padding:16px 20px 26px;align-items:start}
+  @media (max-width:1100px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .panel h2{margin:0;padding:11px 14px;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
+        color:var(--dim);border-bottom:1px solid var(--line);background:var(--panel2)}
+  .pad{padding:12px 14px}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px}
+  .kv span:first-child{color:var(--dim)}
+  .kv span:last-child{font-family:var(--mono);font-size:12.5px;text-align:right;word-break:break-all}
+  .pt{display:flex;justify-content:space-between;gap:8px;padding:7px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+  .pt:last-child{border-bottom:0}
+  .pt .id{font-family:var(--mono);color:var(--dim)}
+  .tag{font:10.5px/1 var(--mono);padding:3px 6px;border-radius:5px;border:1px solid var(--line);color:var(--dim)}
+  .tag.on{color:#7ee787;border-color:rgba(63,185,80,.35);background:rgba(63,185,80,.1)}
+  canvas{display:block;width:100%;height:420px;background:#080c11}
+  .log{font:12px/1.6 var(--mono);max-height:190px;overflow:auto;padding:10px 14px;background:#080c11;
+       white-space:pre-wrap;color:#9fb0c0}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--dim);font-weight:600;font-size:11.5px;letter-spacing:.06em}
+  td.mono{font-family:var(--mono);font-size:12px}
+  .warnbox{border:1px solid rgba(210,153,34,.35);background:rgba(210,153,34,.08);color:#e3b341;
+        border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:10px}
+  footer{padding:0 20px 20px;color:#55616e;font:11px/1.6 var(--mono)}
+</style>
+</head>
+<body>
+
+<!-- ==================== 登录 ==================== -->
+<div id="login">
+  <div class="card">
+    <h1>乐跑控制台</h1>
+    <div class="sub">输入小程序登录后的凭证，直接读取跑区 / 打卡点 / 成绩</div>
+    <div class="body">
+      <div class="row2">
+        <input id="f-host" placeholder="host" value="api3.lptiyu.com">
+        <input id="f-school" placeholder="school_id" value="816">
+      </div>
+      <div class="row2">
+        <input id="f-uid" placeholder="uid">
+        <input id="f-stu" placeholder="学号（可选）">
+      </div>
+      <input id="f-token" placeholder="token（抓包得到的那串）">
+      <input id="f-refresh" placeholder="refresh_token（可选，填了就能一键续期）">
+      <button class="primary" onclick="doLogin()">登录</button>
+      <button onclick="captureStart()" id="btn-cap">一键获取凭证（自动抓包）</button>
+      <div class="hint" id="cap-status"></div>
+      <div class="err" id="login-err"></div>
+      <div class="hint">凭证由微信小程序登录时产生；token 是单会话消耗品，小程序重新登录后需要换新的。
+        抓到 refresh_token 后可「续期」——最长约 30 天不用再开小程序。
+        「一键获取」会自动起抓包、把系统代理指到本机，抓到后自动登录并恢复代理。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 主界面 ==================== -->
+<div id="app" hidden>
+  <header class="app">
+    <div class="brand"><span class="dot"></span> 乐跑控制台</div>
+    <div class="meta">
+      <span class="chip" id="c-school">—</span>
+      <span class="chip" id="c-term">—</span>
+      <span class="chip" id="c-zone">—</span>
+      <button onclick="doRefresh()" id="btn-refresh" title="用 refresh_token 换新 token，不用开小程序">续期</button>
+      <button onclick="logout()">退出</button>
+    </div>
+  </header>
+
+  <main>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <section class="panel">
+        <h2>账号</h2>
+        <div class="pad" id="p-account"></div>
+      </section>
+      <section class="panel">
+        <h2>跑区</h2>
+        <div id="p-zones"></div>
+      </section>
+      <section class="panel">
+        <h2>打卡点</h2>
+        <div id="p-points"></div>
+      </section>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <section class="panel">
+        <h2>轨迹预览</h2>
+        <canvas id="map" width="900" height="420"></canvas>
+        <div class="log" id="mapinfo">尚未生成预览</div>
+      </section>
+      <section class="panel">
+        <h2>跑步记录</h2>
+        <div id="p-records"><div class="pad hint">加载中…</div></div>
+      </section>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <section class="panel">
+        <h2>生成与提交</h2>
+        <div class="pad" style="display:flex;flex-direction:column;gap:10px">
+          <label class="hint">目标距离（公里）
+            <input id="f-dist" value="3.05" style="margin-top:4px">
+          </label>
+          <label class="hint">配速（秒/公里，330 = 5'30"）
+            <input id="f-pace" value="310" style="margin-top:4px">
+          </label>
+          <button class="primary" onclick="doPreview()">生成轨迹预览</button>
+          <div id="preview-stat" class="hint"></div>
+          <div class="warnbox" id="submit-warn" hidden>
+            提交是真实写入。<b>log_data 的字段语义尚未用真机样本校准</b>，
+            服务端可能判无效。建议先用一次小距离实测。
+          </div>
+          <button class="danger" id="btn-submit" onclick="doSubmit()" disabled>提交（实验性）</button>
+          <div class="err" id="submit-err"></div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>反作弊开关（服务端下发）</h2>
+        <div class="pad" id="p-checks"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    协议实现来自 <a href="https://github.com/dan-cun/lepao3" target="_blank" rel="noreferrer">lepao3</a>（LRL-1.0，仅供学习、不可牟利）。
+    本页面只与你填写的学校服务器通信，不上传任何第三方。
+    <span style="color:#3a4652"> · build 2411-2130</span>
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let PROFILE = null;
+let PREVIEW = null;
+
+function esc(s){return String(s ?? "").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+async function api(path, body){
+  const opt = body !== undefined ? {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  let j = {};
+  try { j = await r.json(); } catch(e){ j = {ok:false, error:"响应解析失败"}; }
+  return j;
+}
+
+/* ---------------- 登录 ---------------- */
+async function doLogin(){
+  $("login-err").textContent = "";
+  const body = {
+    host: $("f-host").value.trim(),
+    school_id: Number($("f-school").value.trim() || 0),
+    uid: $("f-uid").value.trim(),
+    token: $("f-token").value.trim(),
+    student_num: $("f-stu").value.trim(),
+    refresh_token: ($("f-refresh")?.value || "").trim(),
+  };
+  if(!body.token || !body.uid){ $("login-err").textContent = "token 和 uid 必填"; return; }
+  const j = await api("/api/login", body);
+  if(!j.ok){ $("login-err").textContent = j.error || "登录失败"; return; }
+  $("login").hidden = true; $("app").hidden = false;
+  render(j.profile);
+  loadRecords();
+}
+
+/* 续期：refresh_token → 新 access_token，不用再开小程序 */
+async function doRefresh(){
+  const btn = $("btn-refresh");
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "续期中…";
+  try{
+    const j = await api("/api/refresh", {});
+    if(j.ok){
+      render(j.profile);
+      btn.textContent = "已续期";
+      setTimeout(()=>{ btn.textContent = old; btn.disabled = false; }, 2500);
+      loadRecords();
+    }else{
+      btn.textContent = old; btn.disabled = false;
+      alert(j.error || "续期失败");
+    }
+  }catch(e){
+    btn.textContent = old; btn.disabled = false;
+    alert("续期失败：" + e);
+  }
+}
+
+async function logout(){
+  await api("/api/logout", {});
+  location.reload();
+}
+
+/* ---------------- 一键获取凭证 ---------------- */
+let capTimer = null;
+
+async function captureStart(){
+  $("cap-status").textContent = "正在启动抓包…";
+  $("login-err").textContent = "";
+  const r = await api("/api/capture/start", {});
+  if(!r.ok){
+    if(r.need_manual){
+      $("cap-status").innerHTML =
+        `${esc(r.error)}<br>${esc(r.hint || "")}<br><br>` +
+        `<button onclick="captureStart(true)" style="margin-top:6px">我已设好代理，开始抓包</button>`;
+      return;
+    }
+    $("cap-status").textContent = r.error || "启动失败";
+    return;
+  }
+  startPolling();
+}
+
+async function captureStart(skipProxy){
+  $("cap-status").textContent = "正在启动抓包…";
+  const r = await api("/api/capture/start", {skip_proxy: !!skipProxy});
+  if(!r.ok){ $("cap-status").textContent = r.error || "启动失败"; return; }
+  startPolling();
+}
+
+function startPolling(){
+  $("cap-status").textContent = "抓包已就绪 —— 现在打开微信小程序（建议先完全退出微信再重开）";
+  if(capTimer) clearInterval(capTimer);
+  capTimer = setInterval(pollCap, 1500);
+}
+
+async function pollCap(){
+  const s = await api("/api/capture/status", {});
+  if(!s.ok) return;
+  // 抓到凭证 → 自动填进登录框
+  if(s.pending){
+    const c = s.pending;
+    $("f-host").value = c.host || "api3.lptiyu.com";
+    $("f-school").value = c.school_id || "";
+    $("f-uid").value = c.uid || "";
+    $("f-token").value = c.token || "";
+    $("f-stu").value = c.student_num || "";
+    if($("f-refresh")) $("f-refresh").value = c.refresh_token || "";
+    const extra = c.refresh_token ? "（含 refresh_token，之后可一键续期）" : "";
+    $("cap-status").innerHTML = `<span style="color:#7ee787">凭证已填入上面的框${extra}，点「登录」即可</span>`;
+    if(capTimer){ clearInterval(capTimer); capTimer = null; }
+    return;
+  }
+  if(s.logged_in && !s.running){
+    clearInterval(capTimer); capTimer = null;
+    $("cap-status").textContent = "凭证已获取，正在进入…";
+    const j = await api("/api/me");
+    if(j.ok && j.profile){
+      $("login").hidden = true; $("app").hidden = false;
+      render(j.profile); loadRecords();
+    }
+    return;
+  }
+  if(!s.running){
+    clearInterval(capTimer); capTimer = null;
+    $("cap-status").textContent = s.msg || "已停止（代理已恢复）";
+    return;
+  }
+  $("cap-status").textContent = `抓取中 ${s.elapsed}s —— ${s.msg}`;
+}
+
+/* ---------------- 渲染 ---------------- */
+function render(p){
+  PROFILE = p;
+  $("c-school").textContent = `${p.school_name || "?"} (${p.school_id})`;
+  $("c-term").textContent = `${p.term_name || "?"} · ${p.term_date || ""}`;
+  $("c-zone").textContent = p.run_zone_name || "—";
+
+  $("p-account").innerHTML = [
+    kv("uid", p.uid), kv("学号", p.student_num || "—"),
+    kv("本学期里程", (p.total_distance ?? "—") + " km"),
+    kv("有效次数", p.total_num ?? "—"),
+    kv("打卡点数", p.total_log_num ?? "—"),
+    kv("时间窗", fmtTime(p.run_start_time) + " – " + fmtTime(p.run_end_time)),
+  ].join("");
+
+  $("p-zones").innerHTML = (p.zones || []).map(z =>
+    `<div class="pt"><span>${esc(z.name)}</span>
+     <span class="tag ${z.is_default?'on':''}">${z.is_default?'默认':z.id}</span></div>`).join("") ||
+    '<div class="pad hint">无跑区</div>';
+
+  $("p-points").innerHTML = (p.points || []).map(pt =>
+    `<div class="pt"><span><span class="id">#${esc(pt.id)}</span> ${esc(pt.name)}</span>
+     <span class="tag">${pt.lat !== null ? pt.lat.toFixed(5)+','+pt.lng.toFixed(5) : '无坐标'}</span></div>`).join("") ||
+    '<div class="pad hint">无打卡点</div>';
+
+  const c = p.checks || {};
+  const items = [["极验 geetest", c.geetest], ["深度检测", c.deepkonw], ["设备指纹", c.geedevice],
+                 ["设备校验", c.device], ["时间窗", c.time], ["人脸", c.face], ["跑区抓拍", c.capture_zone]];
+  $("p-checks").innerHTML = items.map(([k,v]) =>
+    `<div class="kv"><span>${k}</span><span style="color:${Number(v)?'#e3b341':'#7ee787'}">${Number(v)?'开':'关'}</span></div>`).join("")
+    + `<div class="kv"><span>打卡点数</span><span>${p.point_rule?.point_num ?? '—'}</span></div>`
+    + `<div class="kv"><span>判定半径</span><span>${p.point_rule?.log_max_distance ?? '—'} m</span></div>`;
+
+  // 当天保护：只看服务端 run_num（今日【有效】次数），今日提交过但被判无效的不该拦
+  const tc = Number(p.run_num ?? 0);
+  const wb = $("submit-warn");
+  if(tc > 0){
+    wb.hidden = false;
+    wb.innerHTML = `服务端显示你今天已经有 <b>${tc}</b> 条【有效】记录。每天只关联 1 次成绩，
+      再提交不会计入——<b>建议明天再提交</b>。确实要现在提交，会在确认框里二次询问。`;
+    $("btn-submit").disabled = true;
+    $("submit-warn").dataset.blocked = "1";
+  }else{
+    wb.hidden = true;
+    wb.innerHTML = "";
+    delete wb.dataset.blocked;
+  }
+
+  drawMap(null);
+}
+
+function kv(k, v){ return `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>`; }
+function fmtTime(s){
+  s = Number(s||0);
+  return String(Math.floor(s/3600)).padStart(2,"0")+":"+String(Math.floor(s%3600/60)).padStart(2,"0");
+}
+
+/* ---------------- 地图 ---------------- */
+function drawMap(coords, picked){
+  const cv = $("map"), ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = "#080c11"; ctx.fillRect(0,0,W,H);
+
+  const pts = (PROFILE?.points || []).filter(p => p.lat !== null);
+  const all = pts.map(p => [p.lat, p.lng]).concat(coords || []);
+  if(!all.length){ ctx.fillStyle="#3f4c5a"; ctx.font="14px system-ui"; ctx.fillText("暂无坐标数据",20,30); return; }
+
+  const lats = all.map(a=>a[0]), lngs = all.map(a=>a[1]);
+  let minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  let minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  const padLat = Math.max((maxLat-minLat)*0.12, 0.0008);
+  const padLng = Math.max((maxLng-minLng)*0.12, 0.0008);
+  minLat -= padLat; maxLat += padLat; minLng -= padLng; maxLng += padLng;
+  const sx = lng => ((lng - minLng) / (maxLng - minLng)) * (W - 60) + 30;
+  const sy = lat => ((maxLat - lat) / (maxLat - minLat)) * (H - 60) + 30;
+
+  // 网格
+  ctx.strokeStyle = "#131c27"; ctx.lineWidth = 1;
+  for(let i=1;i<6;i++){
+    ctx.beginPath(); ctx.moveTo(30 + i*(W-60)/6, 30); ctx.lineTo(30 + i*(W-60)/6, H-30); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(30, 30 + i*(H-60)/6); ctx.lineTo(W-30, 30 + i*(H-60)/6); ctx.stroke();
+  }
+
+  // 轨迹
+  if(coords && coords.length){
+    ctx.strokeStyle = "rgba(59,130,246,.85)"; ctx.lineWidth = 2.2; ctx.beginPath();
+    coords.forEach(([lat,lng],i) => { const x=sx(lng), y=sy(lat); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.stroke();
+  }
+
+  // 打卡点
+  const pickedIds = new Set((picked||[]).map(p=>String(p.id)));
+  pts.forEach(p => {
+    const x = sx(p.lng), y = sy(p.lat);
+    const on = pickedIds.has(String(p.id));
+    ctx.beginPath(); ctx.arc(x,y,on?8:5,0,Math.PI*2);
+    ctx.fillStyle = on ? "#3fb950" : "#2b3a4a";
+    ctx.fill();
+    if(on){ ctx.strokeStyle = "rgba(63,185,80,.45)"; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.arc(x,y,14,0,Math.PI*2); ctx.stroke(); }
+    if(on){
+      ctx.fillStyle = "#9fe8a8"; ctx.font = "12px system-ui";
+      ctx.fillText(p.name, x + 11, y + 4);
+    }
+  });
+}
+
+/* ---------------- 预览 / 提交 ---------------- */
+async function doPreview(){
+  $("preview-stat").textContent = "生成中…";
+  $("submit-err").textContent = "";
+  const j = await api("/api/preview", {
+    distance_km: Number($("f-dist").value || 2.6),
+    pace: Number($("f-pace").value || 330),
+  });
+  if(!j.ok){ $("preview-stat").textContent = j.error || "生成失败"; return; }
+  PREVIEW = j.preview;
+  drawMap(PREVIEW.coords, PREVIEW.points);
+  const cover = (PREVIEW.covered||[]).map(String);
+  $("preview-stat").innerHTML =
+    `点数 <b>${PREVIEW.n}</b> · 距离 <b>${PREVIEW.distance_km} km</b> · ` +
+    `用时 <b>${Math.floor(PREVIEW.used_time/60)}分${PREVIEW.used_time%60}秒</b> · ` +
+    `覆盖打卡点 <b>${cover.join(", ") || "无"}</b> ` +
+    `<span style="color:${PREVIEW.covered_all?'#7ee787':'#ff9a92'}">${PREVIEW.covered_all?'✓ 全部覆盖':'✗ 有遗漏'}</span>`;
+  $("btn-submit").disabled = !PREVIEW.covered_all || $("submit-warn").dataset.blocked === "1";
+  if($("submit-warn").dataset.blocked !== "1") $("submit-warn").hidden = false;
+}
+
+async function doSubmit(){
+  if(!PREVIEW) return;
+  const tc = Number(PROFILE?.run_num ?? 0);
+  let force = false;
+  if(tc > 0){
+    force = confirm(
+      `服务端显示你今天已经有 ${tc} 条【有效】记录。\n\n` +
+      `每天只关联 1 次成绩，再提交不会计入，` +
+      `并且会再留一条无效记录。\n\n确定要强制提交吗？`
+    );
+    if(!force) return;
+  }
+  const ok = confirm(
+    `确认向服务端提交一条真实记录？\n\n` +
+    `距离 ${PREVIEW.distance_km} km  ·  用时 ${PREVIEW.used_time} 秒\n` +
+    `覆盖打卡点 ${(PREVIEW.covered||[]).join(", ")}\n\n` +
+    `接口：Run/stopRunV278（跑区模式，计入成绩）`
+  );
+  if(!ok) return;
+  $("submit-err").textContent = "提交中…";
+  const j = await api("/api/submit", {confirm:true, force});
+  if(!j.ok){ $("submit-err").textContent = j.error || "提交失败"; return; }
+  $("submit-err").textContent = "已提交";
+  setTimeout(loadRecords, 1500);
+  setTimeout(refreshProfile, 2500);
+}
+
+async function refreshProfile(){
+  const j = await api("/api/me");
+  if(j.ok && j.profile) render(j.profile);
+}
+
+async function loadRecords(){
+  const j = await api("/api/records");
+  if(!j.ok){ $("p-records").innerHTML = `<div class="pad hint">${esc(j.error||"读取失败")}</div>`; return; }
+  const list = Array.isArray(j.records) ? j.records : (j.records?.list || j.records?.data || []);
+  if(!list.length){ $("p-records").innerHTML = '<div class="pad hint">本学期暂无记录</div>'; return; }
+  $("p-records").innerHTML = `<table><thead><tr>
+      <th>日期</th><th>距离</th><th>用时</th><th>状态</th></tr></thead><tbody>` +
+    list.slice(0,12).map(r => {
+      const d = r.start_time || r.run_time || r.date || "";
+      return `<tr><td class="mono">${esc(d)}</td>
+        <td class="mono">${esc(r.distance ?? r.run_distance ?? "")} km</td>
+        <td class="mono">${esc(r.used_time ?? r.time ?? "")} s</td>
+        <td>${esc(r.status_text ?? r.record_status ?? r.status ?? "")}</td></tr>`;
+    }).join("") + `</tbody></table>`;
+}
+
+/* 启动时尝试恢复会话 */
+(async () => {
+  // 1) 已有会话直接进
+  const j = await api("/api/me");
+  if(j.ok && j.profile){
+    $("login").hidden = true; $("app").hidden = false;
+    render(j.profile);
+    loadRecords();
+    return;
+  }
+  // 2) 没有会话 → 用上次抓包的值预填
+  const c = await api("/api/last-capture");
+  if(c.ok && c.capture){
+    const k = c.capture;
+    $("f-host").value = k.host || "api3.lptiyu.com";
+    $("f-school").value = k.school_id || "";
+    $("f-uid").value = k.uid || "";
+    $("f-token").value = k.token || "";
+    $("f-stu").value = k.student_num || "";
+    if($("f-refresh")) $("f-refresh").value = k.refresh_token || "";
+    const rt = k.refresh_token ? "（含 refresh_token，可续期）" : "";
+    $("login-err").innerHTML = `<span style="color:#7ee787">已自动填入上次抓到的凭证（${esc(k.at)}）${rt}</span>，直接点登录即可。`;
+  }
+})();
+</script>
+</body>
+</html>

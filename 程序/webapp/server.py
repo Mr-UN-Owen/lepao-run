@@ -59,10 +59,14 @@ def save_session(sess):
 
 
 def fix_stuck_proxy(verbose=True):
-    """启动自检：代理指着本机某端口、但那个端口没人监听 → 自动关掉。
+    """启动自检：把指向本机端口的系统代理一律关掉。
 
-    场景：上次抓包时用户直接关掉控制台窗口，MITM 被强杀，finally 没跑，
-    代理就留在 127.0.0.1:8086 这个死端口上，整机等于断网。
+    为什么不再判断"端口有没有人监听"：
+    上一次抓包留下的 MITM 进程可能还活着（端口在监听），但它没有父进程管理，
+    微信走它照样超时。**启动网页服务时不需要任何代理**，所以直接清干净。
+
+    真要抓包，用网页上的「一键获取凭证」或 3-抓一次凭证-命令行.bat，
+    它们会自己起 MITM 并重设代理。
     """
     try:
         cur = _read_proxy()
@@ -76,21 +80,15 @@ def fix_stuck_proxy(verbose=True):
     host, _, port_s = server.rpartition(":")
     host = host.strip() or "127.0.0.1"
     if host not in ("127.0.0.1", "localhost", "::1"):
-        return None
-    try:
-        port = int(port_s)
-    except ValueError:
-        return None
-    if _port_open(port):
-        return None                       # 有人在监听，不动
+        return None                       # 指向外部代理（如 Clash），不动
     try:
         _write_proxy(0)
         if verbose:
-            print(f"[lepao-webapp] 检测到残留代理 {server}（无进程监听），已自动关闭，网络恢复")
+            print(f"[lepao-webapp] 已关闭残留的系统代理 {server}（启动网页不需要代理，网络已恢复）")
         return server
     except Exception as e:  # noqa: BLE001
         if verbose:
-            print(f"[lepao-webapp] 检测到残留代理 {server}，但自动关闭失败：{e}")
+            print(f"[lepao-webapp] 检测到系统代理 {server}，但自动关闭失败：{e}")
             print(f"[lepao-webapp] 请手动运行 启动脚本\\4-关闭系统代理-救急.bat")
         return None
 

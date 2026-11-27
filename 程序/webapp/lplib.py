@@ -17,8 +17,10 @@ import hmac
 import http.client
 import json
 import random
+import socket
 import ssl
 import string
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -32,6 +34,64 @@ from lepao.crypto import encrypt_data, decrypt_data, sign_md5, random6  # noqa: 
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
+
+DNS_TIMEOUT = 8.0          # getaddrinfo 没有超时接口，超过这个秒数一律判失败
+DNS_TTL = 300.0
+_DNS_CACHE = {}
+_DNS_LOCK = threading.Lock()
+
+
+def resolve_host(host, timeout=DNS_TIMEOUT, cache=True):
+    """带超时的 DNS 解析。
+
+    为什么必须自己包一层：socket.getaddrinfo 不受任何 timeout 约束。
+    校内 DNS 抽风时它会**永久阻塞**，urllib / http.client 的 timeout 完全不生效，
+    表现就是网页上「一直提交中」，而且后端连异常都抛不出来。
+    返回 (ip, None) 或 (None, 人话原因)。
+    """
+    now = time.time()
+    if cache:
+        with _DNS_LOCK:
+            hit = _DNS_CACHE.get(host)
+        if hit and now - hit[1] < DNS_TTL:
+            return hit[0], None
+
+    box = {}
+
+    def work():
+        try:
+            info = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+            box["ip"] = info[0][4][0]
+        except Exception as e:  # noqa: BLE001
+            box["err"] = f"{type(e).__name__}: {e}"
+
+    t = threading.Thread(target=work, daemon=True)
+    t0 = time.time()
+    t.start()
+    t.join(timeout)
+    if "ip" in box:
+        if cache:
+            with _DNS_LOCK:
+                _DNS_CACHE[host] = (box["ip"], now)
+        return box["ip"], None
+    if "err" in box:
+        return None, f"DNS 解析失败（{box['err']}）"
+    return None, (f"DNS 解析 {host} 超过 {timeout:.0f}s 没返回"
+                  f"（校内 DNS / 认证网关异常，实测 {time.time() - t0:.1f}s）")
+
+
+def tcp_probe(host, port=443, timeout=6.0):
+    """连通性探测：返回 (ok, dns_s, tcp_s, 说明)。"""
+    ip, err = resolve_host(host)
+    if err:
+        return False, None, None, err
+    t0 = time.time()
+    try:
+        s = socket.create_connection((ip, port), timeout=timeout)
+        s.close()
+        return True, None, time.time() - t0, f"{ip}:{port} 可达"
+    except Exception as e:  # noqa: BLE001
+        return False, None, time.time() - t0, f"{ip}:{port} 连不上（{type(e).__name__}: {e}）"
 
 UA = ("Mozilla/5.0 (Linux; Android 10; Redmi Note 7 Build/QKQ1.190910.002; wv) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/142.0.7444.173 "
@@ -68,6 +128,9 @@ class Session:
 
     # ---------------------------------------------------------------- 底层
     def call(self, path, biz=None, flag=False, timeout=20):
+        ip, err = resolve_host(self.host)
+        if err:
+            raise V3Error(-3, err)
         p = {
             "uid": self.uid, "token": self.token, "school_id": self.school_id,
             "term_id": self.term_id, "course_id": 0, "class_id": 0,
@@ -225,28 +288,45 @@ class Session:
         parts.append(f"--{boundary}--\r\n".encode())
         body = b"".join(parts)
 
-        conn = http.client.HTTPSConnection(host, timeout=timeout)
-        try:
-            conn.default_headers.clear()
-        except Exception:
-            pass
-        conn.putrequest("POST", "/", skip_accept_encoding=True)
-        conn.putheader("Connection", "keep-alive")
-        conn.putheader("Content-Length", str(len(body)))
-        conn.putheader("charset", "utf-8")
-        conn.putheader("content-type", f"multipart/form-data; boundary={boundary}")
-        conn.putheader("Referer", f"https://servicewechat.com/{self.appid}/13/page-frame.html")
-        conn.putheader("User-Agent", UA)
-        conn.putheader("Accept-Encoding", "gzip, deflate, br")
-        conn.endheaders(body)
-        resp = conn.getresponse()
-        status = resp.status
-        try:
-            rbody = resp.read().decode("utf-8", "replace")
-        except Exception:
-            rbody = ""
-        conn.close()
-        return status, rbody
+        ip, err = resolve_host(host)
+        if err:
+            raise V3Error(-3, err)
+
+        last = None
+        for attempt in (1, 2):
+            conn = http.client.HTTPSConnection(host, timeout=timeout)
+            try:
+                conn.default_headers.clear()
+            except Exception:
+                pass
+            try:
+                conn.putrequest("POST", "/", skip_accept_encoding=True)
+                conn.putheader("Connection", "keep-alive")
+                conn.putheader("Content-Length", str(len(body)))
+                conn.putheader("charset", "utf-8")
+                conn.putheader("content-type", f"multipart/form-data; boundary={boundary}")
+                conn.putheader("Referer", f"https://servicewechat.com/{self.appid}/13/page-frame.html")
+                conn.putheader("User-Agent", UA)
+                conn.putheader("Accept-Encoding", "gzip, deflate, br")
+                conn.endheaders(body)
+                resp = conn.getresponse()
+                status = resp.status
+                try:
+                    rbody = resp.read().decode("utf-8", "replace")
+                except Exception:
+                    rbody = ""
+                conn.close()
+                return status, rbody
+            except Exception as e:  # noqa: BLE001
+                last = e
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                if attempt == 1:
+                    # 校园网/宿舍网第一次上传经常被掐，隔 1 秒重来一次往往就过
+                    time.sleep(1.0)
+        raise V3Error(-1, f"OSS 上传失败（已重试 2 次）：{type(last).__name__}: {last}")
 
     def record_detail(self, record_id):
         return self.call("/v3/api.php/Run/recordDetailV270", {"record_id": record_id})

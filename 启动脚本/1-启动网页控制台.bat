@@ -32,9 +32,9 @@ echo   本机网址: http://127.0.0.1:%PORT%
 echo   启动后浏览器会自动打开；关掉本窗口即停止服务
 echo ============================================================
 echo.
-rem ---- 启动前清掉指向本机的系统代理（避免残留导致断网）----
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul 2>&1
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable 2>nul | findstr /c:"0x0" >nul && (echo   已确认系统代理关闭) || (echo   [警告] 系统代理关闭失败，请手动运行 4-关闭系统代理-救急.bat)
+rem ---- 系统代理清理交给 server.py 的 fix_stuck_proxy() ----
+rem ---- 只清本工程抓包留下的残留，保留你自己的 Clash / 公司代理 ----
+echo   启动时会自动清理上次抓包留下的代理残留（不会动你自己的代理）
 echo.
 pushd "%APP%"
 %PY% -u webapp\server.py --port %PORT% --open

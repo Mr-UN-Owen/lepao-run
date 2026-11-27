@@ -50,6 +50,7 @@ def _restore_proxy_from_backup():
 
     正常路径由 webapp 的 capture_stop 负责；这里是兜底：
     用户直接关掉控制台窗口、或者 MITM 被单独结束时，避免代理留在死端口。
+    备份格式（webapp 写的）: {"enable":0,"server":"","override":"","pac":""}
     """
     if not os.path.isfile(PROXY_BACKUP):
         return
@@ -57,12 +58,30 @@ def _restore_proxy_from_backup():
         import json as _json
         import subprocess as _sp
         d = _json.load(open(PROXY_BACKUP, encoding="utf-8"))
+        if not isinstance(d, dict):
+            d = {}
         _sp.run(["reg", "add", PS_KEY, "/v", "ProxyEnable", "/t", "REG_DWORD",
-                 "/d", str(int(d.get("enable", 0))), "/f"],
+                 "/d", str(int(d.get("enable") or 0)), "/f"],
                 capture_output=True, timeout=10)
-        if d.get("server") is not None:
-            _sp.run(["reg", "add", PS_KEY, "/v", "ProxyServer", "/t", "REG_SZ",
-                     "/d", str(d["server"]), "/f"], capture_output=True, timeout=10)
+        for reg_name, key in (("ProxyServer", "server"), ("ProxyOverride", "override")):
+            val = d.get(key)
+            if val is not None:
+                _sp.run(["reg", "add", PS_KEY, "/v", reg_name, "/t", "REG_SZ",
+                         "/d", str(val), "/f"], capture_output=True, timeout=10)
+        pac = d.get("pac")
+        if pac:
+            _sp.run(["reg", "add", PS_KEY, "/v", "AutoConfigURL", "/t", "REG_SZ",
+                     "/d", str(pac), "/f"], capture_output=True, timeout=10)
+        else:
+            _sp.run(["reg", "delete", PS_KEY, "/v", "AutoConfigURL", "/f"],
+                    capture_output=True, timeout=10)
+        try:
+            import ctypes
+            w = ctypes.windll.wininet
+            w.InternetSetOptionW(0, 39, 0, 0)     # SETTINGS_CHANGED
+            w.InternetSetOptionW(0, 37, 0, 0)     # REFRESH
+        except Exception:
+            pass
         try:
             os.remove(PROXY_BACKUP)
         except OSError:
@@ -79,19 +98,46 @@ CA_PEM = os.path.join(CA_DIR, "ca.pem")
 LOG = os.path.join(DATA_DIR, "capture_log.jsonl")
 OPENSSL = "openssl"
 
+
+def _find_openssl():
+    """PATH 里没有 openssl 就去找 Git for Windows / OpenSSL / msys2 的常见位置。
+
+    找不到时 leaf_cert 会在运行期抛异常 → 每个 HTTPS 连接都会被直接断开，
+    表现就是「一开抓包所有网站都打不开」。所以启动阶段就要定死这个路径。
+    """
+    import shutil
+    p = shutil.which("openssl")
+    if p:
+        return p
+    for c in (r"C:\Program Files\Git\usr\bin\openssl.exe",
+              r"C:\Program Files (x86)\Git\usr\bin\openssl.exe",
+              r"C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+              r"C:\Program Files\OpenSSL-Win32\bin\openssl.exe",
+              r"D:\msys2\mingw64\bin\openssl.exe",
+              r"D:\msys2\usr\bin\openssl.exe"):
+        if os.path.isfile(c):
+            return c
+    return "openssl"
+
 KEYS = ("school_id", "uid", "token", "student_num", "card_id", "term_id",
         "course_id", "class_id", "nonce", "timestamp")
 
 
 # ---------------------------------------------------------------- CA
 def _run(cmd):
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError("找不到 openssl：装 Git for Windows 或 OpenSSL，"
+                           "并把 openssl.exe 所在目录加进 PATH")
     if p.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:3])}… 失败: {p.stderr[:200]}")
     return p.stdout
 
 
 def ensure_ca():
+    global OPENSSL
+    OPENSSL = _find_openssl()
     os.makedirs(CA_DIR, exist_ok=True)
     os.makedirs(LEAF_DIR, exist_ok=True)
     if not (os.path.isfile(CA_KEY) and os.path.isfile(CA_CRT)):
@@ -374,6 +420,8 @@ def handle_http(client, head, leftover):
 
 def handle(client, addr):
     try:
+        # 空闲连接 120s 回收：微信长连接不回收会把线程堆住，最后整机访问都转圈。
+        client.settimeout(120)
         head, leftover = recv_head(client, 16384)
         if not head:
             client.close()
@@ -476,10 +524,21 @@ def handle(client, addr):
 
 
 def serve(host="127.0.0.1", port=8081):
-    ensure_ca()
+    try:
+        ensure_ca()
+    except Exception as e:  # noqa: BLE001
+        print(f"[mitm] 读取/生成证书失败：{e}")
+        print("[mitm] 这一步需要 openssl：装 Git for Windows 或 OpenSSL，"
+              "并把 openssl.exe 所在目录加进 PATH")
+        sys.exit(2)
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind((host, port))
+    try:
+        srv.bind((host, port))
+    except OSError as e:
+        print(f"[mitm] 端口 {port} 绑定失败：{e}")
+        print("[mitm] 换成其他端口，或先关掉占用这个端口的程序（可能是上一轮没退出的抓包进程）")
+        sys.exit(2)
     srv.listen(128)
     print(f"[mitm] 监听 {host}:{port}  CA={CA_CRT}")
     print("[mitm] 把系统代理指到这个地址，然后打开小程序（建议先开 TUN/强制代理，防止微信绕过）")

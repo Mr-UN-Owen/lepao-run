@@ -92,11 +92,17 @@
       <input id="f-refresh" placeholder="refresh_token（可选，填了就能一键续期）">
       <button class="primary" onclick="doLogin()">登录</button>
       <button onclick="captureStart()" id="btn-cap">一键获取凭证（自动抓包）</button>
+      <button onclick="captureStart(false,'global')" id="btn-cap-global"
+              title="有些客户端不认 PAC，用这个模式；仍会排除本机与局域网">兼容模式（全局代理）</button>
       <div class="hint" id="cap-status"></div>
       <div class="err" id="login-err"></div>
       <div class="hint">凭证由微信小程序登录时产生；token 是单会话消耗品，小程序重新登录后需要换新的。
         抓到 refresh_token 后可「续期」——最长约 30 天不用再开小程序。
-        「一键获取」会自动起抓包、把系统代理指到本机，抓到后自动登录并恢复代理。</div>
+        「一键获取」默认只把 <code>*.lptiyu.com</code> 这些乐跑域名导到本机抓包端口，
+        其他网页/微信完全直连，不会因为抓包中断而断网；抓到后自动还原代理。
+        若某个客户端死活抓不到，再点「兼容模式（全局代理）」。<br>
+        第一次用之前务必先双击 <code>启动脚本\0-首次使用-安装证书.bat</code>，
+        证书没装进「受信任的根证书」时，HTTPS 全部握手失败，小程序会报「网络接口错误」。</div>
     </div>
   </div>
 </div>
@@ -159,7 +165,10 @@
             服务端可能判无效。建议先用一次小距离实测。
           </div>
           <button class="danger" id="btn-submit" onclick="doSubmit()" disabled>提交（实验性）</button>
+          <button id="btn-netcheck" onclick="netcheck()"
+                  title="提交前测一下 DNS 与 TCP 可达性，校园网下先跑这个">网络自检</button>
           <div class="err" id="submit-err"></div>
+          <div class="hint" id="netcheck-out"></div>
         </div>
       </section>
       <section class="panel">
@@ -183,12 +192,27 @@ let PREVIEW = null;
 
 function esc(s){return String(s ?? "").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 
-async function api(path, body){
-  const opt = body !== undefined ? {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)} : {};
-  const r = await fetch(path, opt);
-  let j = {};
-  try { j = await r.json(); } catch(e){ j = {ok:false, error:"响应解析失败"}; }
-  return j;
+async function api(path, body, timeoutMs){
+  const ms = timeoutMs || 30000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), ms);
+  try{
+    const opt = body !== undefined
+      ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), signal:ctrl.signal}
+      : {signal:ctrl.signal};
+    const r = await fetch(path, opt);
+    let j;
+    try { j = await r.json(); }
+    catch(e){ return {ok:false, error:`响应不是 JSON（HTTP ${r.status}）`}; }
+    if(!j || typeof j !== "object") return {ok:false, error:"响应格式异常"};
+    return j;
+  }catch(e){
+    if(e && e.name === "AbortError")
+      return {ok:false, timeout:true, error:`请求超时：${Math.round(ms/1000)} 秒内服务器没有回应`};
+    return {ok:false, net:true, error:`请求失败：${(e && e.message) || e}`};
+  }finally{
+    clearTimeout(timer);
+  }
 }
 
 /* ---------------- 登录 ---------------- */
@@ -240,32 +264,29 @@ async function logout(){
 /* ---------------- 一键获取凭证 ---------------- */
 let capTimer = null;
 
-async function captureStart(){
+async function captureStart(skipProxy, mode){
+  const m = mode || "pac";
   $("cap-status").textContent = "正在启动抓包…";
   $("login-err").textContent = "";
-  const r = await api("/api/capture/start", {});
+  const r = await api("/api/capture/start", {skip_proxy: !!skipProxy, mode: m});
   if(!r.ok){
     if(r.need_manual){
       $("cap-status").innerHTML =
         `${esc(r.error)}<br>${esc(r.hint || "")}<br><br>` +
-        `<button onclick="captureStart(true)" style="margin-top:6px">我已设好代理，开始抓包</button>`;
+        `<button onclick="captureStart(true,'${m}')" style="margin-top:6px">我已设好代理，开始抓包</button>`;
       return;
     }
     $("cap-status").textContent = r.error || "启动失败";
     return;
   }
-  startPolling();
+  startPolling(m);
 }
 
-async function captureStart(skipProxy){
-  $("cap-status").textContent = "正在启动抓包…";
-  const r = await api("/api/capture/start", {skip_proxy: !!skipProxy});
-  if(!r.ok){ $("cap-status").textContent = r.error || "启动失败"; return; }
-  startPolling();
-}
-
-function startPolling(){
-  $("cap-status").textContent = "抓包已就绪 —— 现在打开微信小程序（建议先完全退出微信再重开）";
+function startPolling(mode){
+  const how = (mode === "global")
+    ? "抓包已就绪（全局代理，已排除本机与局域网）"
+    : "抓包已就绪（只代理乐跑域名 *.lptiyu.com，其他网页不受影响）";
+  $("cap-status").textContent = how + " —— 现在打开微信小程序（建议先完全退出微信再重开）";
   if(capTimer) clearInterval(capTimer);
   capTimer = setInterval(pollCap, 1500);
 }
@@ -436,6 +457,8 @@ async function doPreview(){
 
 async function doSubmit(){
   if(!PREVIEW) return;
+  const btn = $("btn-submit");
+  if(btn.disabled) return;
   const tc = Number(PROFILE?.run_num ?? 0);
   let force = false;
   if(tc > 0){
@@ -453,12 +476,57 @@ async function doSubmit(){
     `接口：Run/stopRunV278（跑区模式，计入成绩）`
   );
   if(!ok) return;
-  $("submit-err").textContent = "提交中…";
-  const j = await api("/api/submit", {confirm:true, force});
-  if(!j.ok){ $("submit-err").textContent = j.error || "提交失败"; return; }
-  $("submit-err").textContent = "已提交";
-  setTimeout(loadRecords, 1500);
-  setTimeout(refreshProfile, 2500);
+
+  const old = btn.textContent;
+  btn.disabled = true;
+  let sec = 0;
+  $("submit-err").textContent = "提交中…（0s）";
+  const timer = setInterval(()=>{
+    sec++;
+    $("submit-err").textContent = `提交中…（${sec}s）轨迹上传可能较慢，别刷新页面`;
+  }, 1000);
+
+  try{
+    // 提交链要串 6~8 次外网请求（含 OSS 上传），给足 180s 再判超时
+    const j = await api("/api/submit", {confirm:true, force}, 180000);
+    if(!j.ok){
+      let msg = j.error || "提交失败";
+      if(j.stage) msg += `\n阶段：${j.stage}${j.elapsed ? "，已耗时 " + j.elapsed + "s" : ""}`;
+      if(j.stage === "stop" || j.stage === "review")
+        msg += "\n注意：卡在这一步之前，轨迹可能已经上传成功。先去「本学期记录」确认有没有新记录，再决定是否重试。";
+      $("submit-err").textContent = msg;
+      return;
+    }
+    $("submit-err").textContent = "已提交";
+    setTimeout(loadRecords, 1500);
+    setTimeout(refreshProfile, 2500);
+  }finally{
+    clearInterval(timer);
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+/* ---------------- 网络自检（提交前先跑一次） ---------------- */
+async function netcheck(){
+  const btn = $("btn-netcheck");
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "自检中…";
+  $("netcheck-out").textContent = "";
+  try{
+    const j = await api("/api/netcheck", undefined, 40000);
+    if(!j.ok){ $("netcheck-out").textContent = j.error || "自检失败"; return; }
+    const rows = (j.rows || []).map(r =>
+      `<tr><td>${esc(r.why)}</td><td class="mono">${esc(r.host)}</td>` +
+      `<td>${r.ok ? '<span style="color:#7ee787">通</span>' : '<span style="color:#f85149">不通</span>'}</td>` +
+      `<td class="mono">${r.tcp_s ?? "—"}s</td><td>${esc(r.msg)}</td></tr>`).join("");
+    $("netcheck-out").innerHTML =
+      `<table><thead><tr><th>用途</th><th>域名</th><th>结果</th><th>TCP</th><th>说明</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table>` +
+      `<div style="margin-top:8px">${esc(j.verdict || "")}</div>`;
+  }finally{
+    btn.disabled = false; btn.textContent = old;
+  }
 }
 
 async function refreshProfile(){

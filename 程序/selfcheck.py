@@ -18,6 +18,8 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 OK, BAD, WARN = "OK", "X", "!"
+PS_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+REG_SUBKEY = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 
 
 def mark(ok, warn=False):
@@ -74,7 +76,9 @@ def check_ca():
         pass
     print(f"[{mark(trusted)}] 根证书{'已' if trusted else '尚未'}装入当前用户受信任根"
           f"{'' if trusted else ' —— 先双击 0-首次使用-安装证书.bat'}")
-    return have
+    if have and not trusted:
+        print("      证书没进受信任根时，HTTPS 全部握手失败，小程序会报「网络接口错误」")
+    return have and trusted
 
 
 def check_openssl():
@@ -104,21 +108,77 @@ def check_ports():
     return good
 
 
-def check_proxy():
+def _read_proxy_reg():
+    """读 HKCU Internet Settings 的四项（含 PAC）。
+
+    优先 reg.exe（不受某些 Python 版本的 winreg 权限问题影响），失败回落到 winreg。
+    """
+    out = {"enable": 0, "server": "", "override": "", "pac": ""}
     try:
-        import winreg
-        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                           r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
-        enable = winreg.QueryValueEx(k, "ProxyEnable")[0]
-        try:
-            server = winreg.QueryValueEx(k, "ProxyServer")[0]
-        except OSError:
-            server = ""
-        print(f"[{WARN if enable else OK}] 当前系统代理：ProxyEnable={enable} "
-              f"ProxyServer={server or '(空)'}"
-              f"{'  ← 抓包没结束或异常退出，双击 4-关闭系统代理-救急.bat' if enable else ''}")
+        p = subprocess.run(["reg", "query", PS_KEY], capture_output=True, text=True, timeout=10)
+        if p.returncode == 0 and (p.stdout or "").strip():
+            for line in (p.stdout or "").splitlines():
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                name, kind, val = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                if name == "ProxyEnable":
+                    try:
+                        out["enable"] = int(val, 16) if kind == "REG_DWORD" else int(val)
+                    except ValueError:
+                        out["enable"] = 0
+                elif name == "ProxyServer":
+                    out["server"] = val
+                elif name == "ProxyOverride":
+                    out["override"] = val
+                elif name == "AutoConfigURL":
+                    out["pac"] = val
+            return out
+    except Exception:
+        pass
+
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_SUBKEY) as k:
+        def g(name, default=""):
+            try:
+                return winreg.QueryValueEx(k, name)[0]
+            except OSError:
+                return default
+        out["enable"] = int(g("ProxyEnable", 0) or 0)
+        out["server"] = str(g("ProxyServer", "") or "")
+        out["override"] = str(g("ProxyOverride", "") or "")
+        out["pac"] = str(g("AutoConfigURL", "") or "")
+    return out
+
+
+def check_proxy():
+    """系统代理 / PAC 残留检查 —— 这是「开脚本后整机断网」最常见的现场。"""
+    try:
+        cur = _read_proxy_reg()
     except Exception as e:  # noqa: BLE001
         print(f"[{WARN}] 读不到系统代理设置：{e}")
+        return True
+
+    server = (cur["server"] or "").strip()
+    local = any(server.replace("http://", "").lower().startswith(h)
+                for h in ("127.0.0.1", "localhost", "[::1]"))
+    bad = bool(cur["enable"] and local)
+    print(f"[{mark(not bad, warn=bad)}] 固定代理：ProxyEnable={cur['enable']} "
+          f"ProxyServer={server or '(空)'}"
+          f"{'  ← 指向本机抓包端口，双击 6-一键修复网络.bat' if bad else ''}")
+
+    pac = (cur["pac"] or "").strip()
+    pac_local = bool(pac and ("127.0.0.1" in pac or "localhost" in pac))
+    if pac:
+        print(f"[{mark(not pac_local, warn=pac_local)}] PAC：{pac}"
+              f"{'  ← 本机 PAC；控制台没开时会取不到，用 6-一键修复网络.bat 清掉' if pac_local else ''}")
+    else:
+        print(f"[{OK}] PAC：空（正常）")
+
+    bak = os.path.join(HERE, "_private", "proxy_backup.json")
+    if os.path.isfile(bak):
+        print(f"[{WARN}] 发现代理备份 proxy_backup.json（说明上次抓包没有正常收尾）")
+        print("      双击 启动脚本\\6-一键修复网络.bat 会按它把原代理还原回去")
     return True
 
 
@@ -132,7 +192,7 @@ def main():
     if all(results):
         print(" 结论：环境可用。下一步双击 启动脚本\\1-启动网页控制台.bat")
         return 0
-    print(" 结论：有硬性缺失（✗ 项），按上面提示处理后再跑一次。")
+    print(" 结论：有硬性缺失（[X] 项），按上面提示处理后再跑一次。")
     return 1
 
 

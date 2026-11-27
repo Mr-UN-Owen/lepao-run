@@ -2,28 +2,32 @@
 chcp 936 >nul
 set "PYTHONIOENCODING=gbk"
 rem ============================================================
-rem  校园跑协议研究 / 救急：立刻关闭系统代理
-rem  症状：抓包窗口被强关后，浏览器 / 微信上不了网
+rem  校园跑协议研究 / 救急：一键修复网络
+rem  症状：抓包窗口被强关后，浏览器 / 微信上不了网、小程序报「网络接口错误」
+rem  比旧版多做三件事：按备份还原你原有的代理、删掉残留 PAC、重置 WinHTTP
 rem ============================================================
 setlocal
-echo ============================================================
-echo   正在恢复 / 关闭 Windows 系统代理 ...
-echo ============================================================
-echo.
+cd /d "%~dp0.."
+set "APP=%CD%\程序"
 
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul 2>nul
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyServer /f >nul 2>nul
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v AutoConfigURL /f >nul 2>nul
-netsh winhttp reset proxy >nul 2>&1
+set "PY="
+for %%C in ("py -3" "python" "python3") do (
+  if not defined PY (
+    %%~C -c "import sys" >nul 2>nul
+    if not errorlevel 1 set "PY=%%~C"
+  )
+)
+if not defined PY (
+  echo [x] 没有找到 Python。手动作业：Win+R 输入 inetcpl.cpl
+  echo     -^> 「连接」-^> 局域网设置 -^> 取消勾选「为 LAN 使用代理服务器」
+  pause
+  exit /b 1
+)
 
-echo 当前代理状态（ProxyEnable 应为 0x0）：
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable 2>nul
+pushd "%APP%"
+%PY% -u 工具\fix_network.py
+set "RC=%ERRORLEVEL%"
+popd
 echo.
-echo 如果上面显示 0x1，说明这次改注册表被拦下来了（安全软件 / 组策略）。
-echo 那就手动改：Win+R → 输入 inetcpl.cpl → 回车 → 「连接」标签
-echo          → 局域网设置 → 取消勾选「为 LAN 使用代理服务器」→ 确定。
-echo.
-echo 浏览器 / 微信如果还打不开网页，按同样的路径再确认一次：
-echo   设置 - 网络和 Internet - 代理 - 「使用代理服务器」= 关
-echo.
+if not "%RC%"=="0" echo [!] 修复脚本异常退出，请看上面最后几行报错。
 pause

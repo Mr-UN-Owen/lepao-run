@@ -31,7 +31,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 sys.path.insert(0, HERE)
 
-from lplib import Session, V3Error            # noqa: E402
+from lplib import Session, V3Error, resolve_host, tcp_probe            # noqa: E402
 from lepao import crypto                      # noqa: E402
 
 DATA_DIR = os.path.join(REPO, "_private")
@@ -39,6 +39,19 @@ SESSION_FILE = os.path.join(DATA_DIR, "webapp_session.json")
 INDEX = os.path.join(HERE, "index.html")
 
 S = {"sess": None, "lock": threading.Lock()}
+
+# 提交链当前走到哪一步 —— 异常时靠它告诉前端「卡在哪」。
+# 没有它的话，后端一抛异常就是「连接被直接关掉、一个字节都不回」，
+# 前端只能永远显示「提交中…」（校园网/宿舍网下最常见的就是这种假死）。
+SUBMIT_STAGE = {"s": "", "t0": 0.0}
+
+
+def _stage(name):
+    SUBMIT_STAGE["s"] = name
+    if not SUBMIT_STAGE["t0"]:
+        SUBMIT_STAGE["t0"] = time.time()
+    dt = time.time() - SUBMIT_STAGE["t0"]
+    print(f"[lepao-webapp] submit 阶段 {name} 累计 {dt:.1f}s", flush=True)
 
 
 def save_session(sess):
@@ -58,39 +71,76 @@ def save_session(sess):
         json.dump(data, f, ensure_ascii=False, indent=1)
 
 
-def fix_stuck_proxy(verbose=True):
-    """启动自检：把指向本机端口的系统代理一律关掉。
+def _is_local_proxy(server):
+    """ProxyServer 是否指向「本工程的抓包端口」（8081/8086/8090）。
 
-    为什么不再判断"端口有没有人监听"：
-    上一次抓包留下的 MITM 进程可能还活着（端口在监听），但它没有父进程管理，
-    微信走它照样超时。**启动网页服务时不需要任何代理**，所以直接清干净。
-
-    真要抓包，用网页上的「一键获取凭证」或 3-抓一次凭证-命令行.bat，
-    它们会自己起 MITM 并重设代理。
+    只认这三个端口，是为了不误伤用户自己的 Clash / v2ray（常见 7890、1080、10808）。
     """
+    s = (server or "").strip()
+    if not s:
+        return False
+    s = s.replace("http://", "").replace("https://", "")
+    host, _, port_s = s.rpartition(":")
+    if not port_s:
+        host, port_s = s, ""
+    host = host.strip("[] ").lower()
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    try:
+        return int(port_s) in CAPTURE_PORTS
+    except ValueError:
+        return False
+
+
+def fix_stuck_proxy(verbose=True):
+    """启动自检：只清理「本工程抓包留下的」代理残留，不碰用户自己的代理。
+
+    处理顺序：
+      1) 有 _private/proxy_backup.json → 按备份原样还原（用户原来的 Clash 等原封不动）
+      2) ProxyEnable=1 且指向本机抓包端口 → 关掉
+      3) AutoConfigURL 指向本机 /proxy.pac → 删除
+
+    为什么要这么谨慎：老版本启动时直接写 ProxyEnable=0，会把用户的 Clash / 公司代理
+    一起关掉，表现就是「开个脚本，别的网页都打不开了」。
+    """
+    changed = []
+    bak = _load_backup()
+    if bak is not None:
+        try:
+            _restore_proxy(bak)
+            _clear_backup()
+            changed.append(f"按备份还原（enable={bak.get('enable')} "
+                           f"server={bak.get('server') or '-'}）")
+        except Exception as e:  # noqa: BLE001
+            if verbose:
+                print(f"[lepao-webapp] 按备份还原代理失败：{e}")
+
     try:
         cur = _read_proxy()
     except Exception:
-        return None
-    if not cur.get("enable"):
-        return None
-    server = (cur.get("server") or "").strip()
-    if not server:
-        return None
-    host, _, port_s = server.rpartition(":")
-    host = host.strip() or "127.0.0.1"
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        return None                       # 指向外部代理（如 Clash），不动
-    try:
-        _write_proxy(0)
-        if verbose:
-            print(f"[lepao-webapp] 已关闭残留的系统代理 {server}（启动网页不需要代理，网络已恢复）")
-        return server
-    except Exception as e:  # noqa: BLE001
-        if verbose:
-            print(f"[lepao-webapp] 检测到系统代理 {server}，但自动关闭失败：{e}")
-            print(f"[lepao-webapp] 请手动运行 启动脚本\\4-关闭系统代理-救急.bat")
-        return None
+        cur = None
+
+    if cur:
+        if cur.get("enable") and _is_local_proxy(cur.get("server")):
+            try:
+                _write_proxy(0, override=str(cur.get("override") or ""),
+                             pac=str(cur.get("pac") or ""))
+                changed.append(f"关闭残留抓包代理 {cur.get('server')}")
+            except Exception as e:  # noqa: BLE001
+                if verbose:
+                    print(f"[lepao-webapp] 检测到残留代理 {cur.get('server')}，但关闭失败：{e}")
+                    print("[lepao-webapp] 请手动运行 启动脚本\\4-关闭系统代理-救急.bat")
+        pac = str(cur.get("pac") or "").strip().lower()
+        if pac and pac.endswith("/proxy.pac") and ("127.0.0.1" in pac or "localhost" in pac):
+            try:
+                _write_proxy(int(cur.get("enable") or 0), pac="")
+                changed.append(f"删除残留 PAC {pac}")
+            except Exception:
+                pass
+    if verbose and changed:
+        print("[lepao-webapp] 已清理残留：" + "；".join(changed))
+        print("[lepao-webapp] 启动网页不需要任何代理，网络已恢复正常")
+    return changed
 
 
 def load_session():
@@ -114,59 +164,170 @@ def load_session():
 # 复刻 capture_launcher 的安全顺序：先起 MITM 确认监听，才设代理；任何退出路径都恢复原值。
 MITM = os.path.join(REPO, "工具", "mitm_debug_proxy.py")
 CAP = {"proc": None, "orig": None, "started": 0.0, "running": False,
-       "baseline": 0, "port": 8086, "msg": "", "pending": None}
+       "baseline": 0, "port": 8086, "mode": "pac", "msg": "", "pending": None}
 CAP_LOCK = threading.Lock()
 
 
 PS_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+PROXY_BACKUP = os.path.join(DATA_DIR, "proxy_backup.json")
+
+# ---- 只把这些域名导进抓包代理（PAC 模式）。其余一律 DIRECT。
+# 这是「开了脚本也不再整机断网」的根本保证：其它网页根本没经过 MITM。
+PAC_HOSTS = ("lptiyu.com", "weixin.qq.com", "wx.qq.com", "servicewechat.com")
+CAPTURE_PORTS = (8081, 8086, 8090)   # 本工程用过的抓包端口（清残留时只认这几个）
+# 全局模式也要排除本机 / 局域网，否则控制台 http://127.0.0.1:8780 自己都会被代理。
+PROXY_OVERRIDE = "<local>;127.*;localhost;*.local;10.*;172.16.*;192.168.*"
+SERVER_PORT = {"port": 8780}
+
+
+def _reg(*args):
+    """调 reg.exe。winreg 直连常被安全软件拦成 WinError 5，走子进程更稳。"""
+    r = subprocess.run(["reg", *args], capture_output=True, text=True, timeout=15)
+    if r.returncode != 0:
+        raise RuntimeError(((r.stdout or "") + (r.stderr or "")).strip()
+                           or f"reg 返回 {r.returncode}")
+    return r
+
+
+def _refresh_wininet():
+    """通知 WinINET 重新读设置，否则已经开着的浏览器/微信用的是旧代理值。"""
+    try:
+        import ctypes
+        w = ctypes.windll.wininet
+        w.InternetSetOptionW(0, 39, 0, 0)   # SETTINGS_CHANGED
+        w.InternetSetOptionW(0, 37, 0, 0)   # REFRESH
+    except Exception:
+        pass
 
 
 def _read_proxy():
-    """读代理设置：优先 reg query（不依赖 winreg 权限）。"""
-    out = {"enable": 0, "server": "", "override": ""}
+    """读代理设置（ProxyEnable / ProxyServer / ProxyOverride / AutoConfigURL）。
+
+    用 split(None, 2) 而不是按「4 个空格」切：ProxyServer 值里含空格时也能读全。
+    """
+    out = {"enable": 0, "server": "", "override": "", "pac": ""}
+    got = False
     try:
         r = subprocess.run(["reg", "query", PS_KEY], capture_output=True, text=True, timeout=10)
-        for line in (r.stdout or "").splitlines():
-            parts = [p for p in line.split("    ") if p.strip()]
-            if len(parts) < 3:
-                continue
-            name, kind, val = parts[0].strip(), parts[1].strip(), parts[2].strip()
-            if name == "ProxyEnable":
+        if r.returncode == 0 and (r.stdout or "").strip():
+            got = True
+            for line in (r.stdout or "").splitlines():
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                name, kind, val = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                if name == "ProxyEnable":
+                    try:
+                        out["enable"] = int(val, 16) if kind == "REG_DWORD" else int(val)
+                    except ValueError:
+                        out["enable"] = 0
+                elif name == "ProxyServer":
+                    out["server"] = val
+                elif name == "ProxyOverride":
+                    out["override"] = val
+                elif name == "AutoConfigURL":
+                    out["pac"] = val
+    except Exception:
+        got = False
+    if got:
+        return out
+    # 回退：安全软件把 reg.exe 拦了就直接读注册表（读权限一般不受限）
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as k:
+            def _g(name, dflt=""):
                 try:
-                    out["enable"] = int(val, 16) if kind == "REG_DWORD" else int(val)
-                except ValueError:
-                    out["enable"] = 0
-            elif name == "ProxyServer":
-                out["server"] = val
-            elif name == "ProxyOverride":
-                out["override"] = val
+                    return winreg.QueryValueEx(k, name)[0]
+                except OSError:
+                    return dflt
+            out["enable"] = int(_g("ProxyEnable", 0) or 0)
+            out["server"] = str(_g("ProxyServer", "") or "")
+            out["override"] = str(_g("ProxyOverride", "") or "")
+            out["pac"] = str(_g("AutoConfigURL", "") or "")
     except Exception:
         pass
     return out
 
 
-def _write_proxy(enable, server=None, override=None):
-    """写代理设置：用 reg.exe（winreg 直连常被安全软件拦成 WinError 5）。"""
+def _write_proxy(enable, server=None, override=None, pac=None):
+    """写代理设置。
 
-    def reg(*args):
-        r = subprocess.run(["reg", *args], capture_output=True, text=True, timeout=15)
-        if r.returncode != 0:
-            msg = ((r.stdout or "") + (r.stderr or "")).strip()
-            raise RuntimeError(msg or f"reg 返回 {r.returncode}")
-        return r
-
-    reg("add", PS_KEY, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", str(int(enable)), "/f")
+    pac=None  → 不动 AutoConfigURL
+    pac=""    → 删除 AutoConfigURL（关掉 PAC）
+    pac=url   → 写入 PAC 地址
+    """
+    _reg("add", PS_KEY, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", str(int(enable)), "/f")
     if server is not None:
-        reg("add", PS_KEY, "/v", "ProxyServer", "/t", "REG_SZ", "/d", server, "/f")
+        _reg("add", PS_KEY, "/v", "ProxyServer", "/t", "REG_SZ", "/d", server, "/f")
     if override is not None:
-        reg("add", PS_KEY, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", override, "/f")
+        _reg("add", PS_KEY, "/v", "ProxyOverride", "/t", "REG_SZ", "/d", override, "/f")
+    if pac is not None:
+        if pac:
+            _reg("add", PS_KEY, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", pac, "/f")
+        else:
+            subprocess.run(["reg", "delete", PS_KEY, "/v", "AutoConfigURL", "/f"],
+                           capture_output=True, text=True, timeout=10)
+    _refresh_wininet()
+
+
+# ---------------------------------------------------------------- 备份 / 恢复
+def _save_backup(d):
     try:
-        import ctypes
-        w = ctypes.windll.wininet
-        w.InternetSetOptionW(0, 39, 0, 0)
-        w.InternetSetOptionW(0, 37, 0, 0)
-    except Exception:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(PROXY_BACKUP, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+    except OSError:
         pass
+
+
+def _load_backup():
+    try:
+        with open(PROXY_BACKUP, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _clear_backup():
+    try:
+        os.remove(PROXY_BACKUP)
+    except OSError:
+        pass
+
+
+def _restore_proxy(d):
+    """把系统代理恢复成备份里的原值；d 为空则关代理 + 清 PAC。"""
+    if not isinstance(d, dict):
+        _write_proxy(0, "", "", "")
+        return
+    _write_proxy(int(d.get("enable") or 0),
+                 str(d.get("server") or ""),
+                 str(d.get("override") or ""),
+                 str(d.get("pac") or ""))
+
+
+def _pac_text(port):
+    """只把 PAC_HOSTS 的域名导到本机代理，其余 DIRECT。
+
+    末尾的 `; DIRECT` 是兜底：MITM 挂了也只是抓不到包，网页照常打开。
+    """
+    hosts = ", ".join('"%s"' % h for h in PAC_HOSTS)
+    lines = [
+        "function FindProxyForURL(url, host) {",
+        f"  var d = [{hosts}];",
+        "  host = (host || '').toLowerCase();",
+        "  for (var i = 0; i < d.length; i++) {",
+        "    var x = d[i];",
+        "    if (host === x || host.slice(-(x.length + 1)) === '.' + x)",
+        f"      return 'PROXY 127.0.0.1:{port}; DIRECT';",
+        "  }",
+        "  return 'DIRECT';",
+        "}",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _port_open(port, timeout=0.4):
@@ -187,30 +348,42 @@ def _log_lines():
         return [ln for ln in f if ln.strip()]
 
 
-def capture_start(port=8086, skip_proxy=False):
+def capture_start(port=8086, skip_proxy=False, mode="pac"):
+    """起抓包。
+
+    mode="pac"（默认）只把 PAC_HOSTS 里的域名导到本机代理，其他网站直连；
+    mode="global"   系统全局代理（兼容不认 PAC 的客户端），但排除本机 / 局域网。
+
+    不管哪种模式：先起 MITM 并确认监听，才动代理；任何退出路径都按备份还原。
+    """
     with CAP_LOCK:
         if CAP["running"]:
             return {"ok": False, "error": "已经在抓取中"}
         if _port_open(port):
             return {"ok": False, "error": f"端口 {port} 被占用，先关掉之前的抓包窗口"}
+
         CAP["orig"] = _read_proxy()
         CAP["baseline"] = len(_log_lines())
         CAP["port"] = port
-        # 写一份代理备份：MITM 被强杀时由它自己恢复（关窗口兜底）
-        try:
-            import json as _json
-            os.makedirs(DATA_DIR, exist_ok=True)
-            with open(os.path.join(DATA_DIR, "proxy_backup.json"), "w",
-                      encoding="utf-8") as _f:
-                _json.dump(CAP["orig"], _f, ensure_ascii=False)
-        except OSError:
-            pass
+        CAP["mode"] = mode if mode in ("pac", "global") else "pac"
+        CAP["msg"] = ""
+        CAP["pending"] = None
+        # 先落一份备份：MITM 被强杀时由它自己的 atexit 兜底还原
+        _save_backup(CAP["orig"])
         env = dict(os.environ)
-        env["PATH"] = r"D:\msys2\mingw64\bin;D:\msys2\usr\bin;" + env.get("PATH", "")
+        # 用 msys2 的 openssl 给每个域名现签叶证书；装在其他路径也不影响（PATH 只是前缀）
+        env["PATH"] = (r"D:\msys2\mingw64\bin;D:\msys2\usr\bin;"
+                       + env.get("PATH", ""))
         env["PYTHONIOENCODING"] = "utf-8"
-        proc = subprocess.Popen([sys.executable, "-u", MITM, "--port", str(port)],
-                                cwd=REPO, env=env,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            proc = subprocess.Popen([sys.executable, "-u", MITM, "--port", str(port)],
+                                    cwd=REPO, env=env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            _clear_backup()
+            CAP["orig"] = None
+            return {"ok": False, "error": f"MITM 启动失败：{e}"}
+
         # 先确认监听，才动系统代理
         ok = False
         for _ in range(100):
@@ -225,35 +398,52 @@ def capture_start(port=8086, skip_proxy=False):
                 proc.kill()
             except Exception:
                 pass
-            return {"ok": False, "error": "MITM 没起来，代理设置一个字都没动"}
+            _clear_backup()
+            CAP["orig"] = None
+            return {"ok": False, "error": "MITM 没起来，代理设置一个字都没动（网络不受影响）"}
 
         if not skip_proxy:
             try:
-                _write_proxy(1, f"127.0.0.1:{port}")
+                if CAP["mode"] == "pac":
+                    # 只代理乐跑域名；ProxyEnable=0 所以其他网站完全直连，不会被拖死。
+                    _write_proxy(0, override=PROXY_OVERRIDE,
+                                 pac=f"http://127.0.0.1:{SERVER_PORT['port']}/proxy.pac")
+                else:
+                    # 全局模式必须清 PAC，否则 PAC 优先，全局代理根本不生效
+                    _write_proxy(1, f"127.0.0.1:{port}", PROXY_OVERRIDE, pac="")
             except Exception as e:  # noqa: BLE001 - 权限不足时给手动兜底
                 try:
                     proc.kill()
                 except Exception:
                     pass
+                _clear_backup()
+                CAP["orig"] = None
                 return {"ok": False, "need_manual": True,
                         "error": f"自动改系统代理失败（{e}）。",
                         "hint": f"手动把 Windows 代理设为 127.0.0.1:{port}，然后点「我已设好代理」。"}
         CAP.update(proc=proc, running=True, started=time.time(),
-                   msg="MITM 已就绪，请打开小程序")
+                   msg=("MITM 已就绪（只代理乐跑域名），请打开小程序"
+                        if CAP["mode"] == "pac" else
+                        "MITM 已就绪（全局代理），请打开小程序"))
         threading.Thread(target=_capture_watch, daemon=True).start()
-        return {"ok": True, "port": port}
+        threading.Thread(target=_capture_guard, daemon=True).start()
+        return {"ok": True, "port": port, "mode": CAP["mode"]}
 
 
 def capture_stop(reason=""):
+    """停抓包并把系统代理还原。任何路径（手动停 / 超时 / 进程崩 / 看门狗）都走这里。"""
     with CAP_LOCK:
-        if not CAP["running"] and CAP["proc"] is None:
+        if not CAP["running"] and CAP["proc"] is None and CAP["orig"] is None:
             return
         CAP["running"] = False
-        try:
-            if CAP["orig"]:
-                _write_proxy(CAP["orig"]["enable"], CAP["orig"]["server"], CAP["orig"]["override"])
-        except Exception:
-            pass
+        err = ""
+        if CAP["orig"] is not None:
+            try:
+                _restore_proxy(CAP["orig"])
+            except Exception as e:  # noqa: BLE001
+                err = f"代理恢复失败（{e}），请双击 启动脚本\\4-关闭系统代理-救急.bat"
+            CAP["orig"] = None
+        _clear_backup()
         p = CAP["proc"]
         CAP["proc"] = None
         if p and p.poll() is None:
@@ -265,8 +455,36 @@ def capture_stop(reason=""):
                     p.kill()
                 except Exception:
                     pass
-        if reason:
+        if err:
+            CAP["msg"] = err
+        elif reason:
             CAP["msg"] = reason
+
+
+def _capture_guard():
+    """看门狗：抓包进程一死 / 端口连续不通，立刻还原系统代理。
+
+    这是「开着脚本整机断网」的最后一层保险：只要 MITM 不在了，
+    3 秒内代理就回到原样，浏览器和微信马上能上网。
+    """
+    miss = 0
+    while True:
+        time.sleep(1.2)
+        if not CAP["running"]:
+            return
+        p = CAP.get("proc")
+        if p is None:
+            return
+        dead = p.poll() is not None
+        if not dead:
+            if _port_open(CAP["port"]):
+                miss = 0
+                continue
+            miss += 1
+            dead = miss >= 3
+        if dead:
+            capture_stop("抓包进程已退出，系统代理已自动还原（网络正常，可重新点一次）")
+            return
 
 
 def _capture_watch():
@@ -299,7 +517,9 @@ def _capture_watch():
 
     capture_stop("已抓到凭证")          # 先恢复代理、杀掉 MITM
     if not cand:
-        CAP["msg"] = "超时未抓到凭证，已恢复代理"
+        # 若看门狗已经写了「进程已退出」之类的原因，就别覆盖成「超时」
+        if not CAP["msg"]:
+            CAP["msg"] = "超时未抓到凭证，已恢复代理"
         return
     time.sleep(0.6)                      # 等代理设置真正生效
     sess = Session(host=cand["host"], school_id=cand["school_id"], uid=cand["uid"],
@@ -343,6 +563,23 @@ def _extract_cred(pl):
     return {"token": tok, "uid": uid, "refresh_token": rt, "refresh_expire": exp,
             "student_num": str(pl.get("student_num") or ""),
             "school_id": pl.get("school_id") or 0}
+
+
+def _net_verdict(rows):
+    """把自检结果翻译成一句人话结论。"""
+    base, api, oss = rows[-1], rows[0], rows[1]
+    if not base["ok"]:
+        return ("连外网基线都不通：校园网大概率没认证（Portal 掉线）或出口被封。"
+                "先在浏览器打开任意网站，看是否被跳到认证页")
+    if not api["ok"]:
+        return "乐跑 API 不通：校内 DNS 或出口策略问题。换手机热点再自检一次做对比"
+    if not oss["ok"]:
+        return ("API 通、OSS 不通 —— 这就是提交卡住的典型原因（轨迹文件要上传到阿里云 OSS）。"
+                "换手机热点，或避开 20:00-23:00 高峰")
+    if (oss.get("tcp_s") or 0) > 2.0:
+        return "三项都通，但 OSS 建连偏慢（>2s）：晚间高峰仍可能超时，建议避开高峰提交"
+    return ("网络侧没问题：三项都通、建连正常。若仍提交失败，重点查 token 是否被顶号、"
+            "以及系统时间是否准确")
 
 
 def last_capture():
@@ -588,7 +825,35 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ---------------------------------------------------------- GET
+    def _fail(self, e):
+        """任何未捕获异常都变成一个可读 JSON —— 绝不再「静默断连」。
+
+        老行为：异常冒到 BaseHTTPRequestHandler → 关连接 → 浏览器拿到
+        net::ERR_EMPTY_RESPONSE → 页面永远停在「提交中…」。
+        """
+        stage = SUBMIT_STAGE.get("s") or ""
+        dt = (time.time() - SUBMIT_STAGE["t0"]) if SUBMIT_STAGE.get("t0") else 0.0
+        print(f"[lepao-webapp] 请求异常 stage={stage or '-'} {dt:.1f}s: "
+              f"{type(e).__name__}: {e}", flush=True)
+        try:
+            self._send(200, {
+                "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+                "stage": stage,
+                "elapsed": round(dt, 1),
+                "hint": "后端在这一步抛异常；重试前先看控制台窗口的 traceback",
+            })
+        except Exception:
+            pass
+
     def do_GET(self):
+        SUBMIT_STAGE["s"] = ""
+        try:
+            self._get()
+        except Exception as e:  # noqa: BLE001
+            self._fail(e)
+
+    def _get(self):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             try:
@@ -596,6 +861,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, f.read(), "text/html; charset=utf-8")
             except OSError as e:
                 self._send(500, f"index.html 缺失: {e}", "text/plain; charset=utf-8")
+            return
+        if path == "/proxy.pac":
+            # PAC：只把乐跑域名导到本机抓包端口，其他网站一律 DIRECT。
+            body = _pac_text(CAP["port"] if CAP["running"] else 8086)
+            self._send(200, body, "application/x-ns-proxy-autoconfig; charset=utf-8")
             return
         if path == "/auto":
             # 绕过前端：用最近抓到的凭证直接登录，然后跳回主页
@@ -638,6 +908,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/last-capture":
             self._send(200, {"ok": True, "capture": last_capture()})
             return
+        if path == "/api/netcheck":
+            # 提交前自检：把「校园网到底卡在哪」变成可读结果
+            sess = S["sess"]
+            api_host = (getattr(sess, "host", "") or "api3.lptiyu.com").strip()
+            targets = [(api_host, 443, "乐跑 API"),
+                       ("lptiyu-data.oss-cn-hangzhou.aliyuncs.com", 443, "OSS 轨迹上传"),
+                       ("www.baidu.com", 443, "外网基线")]
+            rows = []
+            for h, port, why in targets:
+                t0 = time.time()
+                ok, _dns, tcp_s, msg = tcp_probe(h, port)
+                rows.append({"host": h, "port": port, "why": why, "ok": ok,
+                             "tcp_s": (round(tcp_s, 2) if tcp_s is not None else None),
+                             "msg": msg, "ms": round((time.time() - t0) * 1000)})
+            self._send(200, {"ok": True, "rows": rows, "verdict": _net_verdict(rows)})
+            return
         if path == "/api/records":
             sess = S["sess"]
             if not sess:
@@ -654,6 +940,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------------------------------------- POST
     def do_POST(self):
+        SUBMIT_STAGE["s"] = ""
+        SUBMIT_STAGE["t0"] = 0.0
+        try:
+            self._post()
+        except Exception as e:  # noqa: BLE001
+            self._fail(e)
+
+    def _post(self):
         path = self.path.split("?", 1)[0]
         data = self._body()
 
@@ -709,11 +1003,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/capture/start":
-            r = capture_start(int(data.get("port") or 8086), bool(data.get("skip_proxy")))
+            r = capture_start(int(data.get("port") or 8086),
+                              bool(data.get("skip_proxy")),
+                              str(data.get("mode") or "pac"))
             self._send(200 if r.get("ok") else 409, r)
             return
         if path == "/api/capture/status":
             self._send(200, {"ok": True, "running": CAP["running"],
+                             "mode": CAP["mode"],
                              "msg": CAP["msg"],
                              "pending": CAP["pending"],
                              "elapsed": int(time.time() - CAP["started"]) if CAP["started"] else 0,
@@ -788,6 +1085,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/submit":
+            SUBMIT_STAGE["t0"] = time.time()
+            _stage("precheck")
             sess = S["sess"]
             if not sess:
                 self._send(401, {"ok": False, "error": "未登录"})
@@ -798,6 +1097,7 @@ class Handler(BaseHTTPRequestHandler):
             # 当天保护：只认服务端的 run_num（今日已跑**有效**次数）。
             # 今天提交过但被判无效的记录不该拦——名额还在。
             try:
+                _stage("before_run1")
                 sess.before_run()
             except V3Error:
                 pass
@@ -817,10 +1117,12 @@ class Handler(BaseHTTPRequestHandler):
             # ---- 真机顺序：beforeRun → getTimestamp → beforeRun → stopFreeRun ----
             # 中间那次 beforeRun 会刷新服务端侧的“本次跑步”上下文，漏掉会报「跑步时间异常」
             try:
+                _stage("before_run2")
                 sess.before_run()
             except V3Error:
                 pass
             try:
+                _stage("timestamp")
                 ts = sess.server_ts()
             except V3Error:
                 ts = int(time.time())
@@ -894,7 +1196,9 @@ class Handler(BaseHTTPRequestHandler):
             now_ms, record_file, _fname = make_record_file()
 
             # ---- 4) STS + 上传 ----
+            _stage("sts")
             sts = sess.get_oss_sts()
+            _stage("upload")
             up_status, up_body = sess.upload_track(txt, sts, record_file, now_ms,
                                                    use_callback=False)
             if up_status not in (200, 203, 204):
@@ -905,6 +1209,7 @@ class Handler(BaseHTTPRequestHandler):
 
             # ---- 5) 提交前再刷一次 beforeRun（真机在 stop 前必调）----
             try:
+                _stage("before_run3")
                 sess.before_run()
             except V3Error:
                 pass
@@ -939,6 +1244,7 @@ class Handler(BaseHTTPRequestHandler):
                 "record_file": record_file,
             }
             try:
+                _stage("stop")
                 j = sess.stop_run_v278(biz)
             except V3Error as e:
                 self._send(200, {"ok": False, "error": str(e), "biz": biz,
@@ -953,6 +1259,7 @@ class Handler(BaseHTTPRequestHandler):
             review = None
             if rid:
                 try:
+                    _stage("review")
                     review = sess.record_detail(rid).get("data")
                 except V3Error:
                     review = None
@@ -970,6 +1277,7 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--open", action="store_true", help="启动后自动用默认浏览器打开")
     a = ap.parse_args()
+    SERVER_PORT["port"] = a.port        # PAC 地址要用真实端口
     s = load_session()
     if s:
         S["sess"] = s
@@ -995,6 +1303,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            capture_stop("控制台退出，系统代理已还原")
+        except Exception:
+            pass
         srv.server_close()
 
 

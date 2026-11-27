@@ -1,14 +1,14 @@
 @echo off
-chcp 65001 >nul
-set "PYTHONIOENCODING=utf-8"
+chcp 936 >nul
+set "PYTHONIOENCODING=gbk"
 rem ============================================================
-rem  æ ¡å›­è·‘åè®®ç ”ç©¶ / è¿›é˜¶ï¼šæ—§ç‰ˆæŽ§åˆ¶å°ï¼ˆç«¯å£ 8770ï¼‰
-rem  éœ€è¦å…ˆæœ‰ ç¨‹åº\config.jsonï¼ˆä»Ž ç¤ºä¾‹é…ç½® å¤åˆ¶ï¼‰
-rem  config é»˜è®¤ç«™ç‚¹å†™çš„æ˜¯ api2ï¼Œæœ¬æ¡ˆä¾‹è¦æ”¹æˆ api3.lptiyu.com
+rem  Ð£Ô°ÅÜÐ­ÒéÑÐ¾¿ / ½ø½×£º¾É°æ¿ØÖÆÌ¨£¨¶Ë¿Ú 8770£©
+rem  ÐèÒªÏÈÓÐ ³ÌÐò\config.json£¨´Ó Ê¾ÀýÅäÖÃ ¸´ÖÆ£©
+rem  config Ä¬ÈÏÕ¾µãÐ´µÄÊÇ api2£¬±¾°¸ÀýÒª¸Ä³É api3.lptiyu.com
 rem ============================================================
 setlocal
 cd /d "%~dp0.."
-set "APP=%CD%\ç¨‹åº"
+set "APP=%CD%\³ÌÐò"
 set "PORT=8770"
 
 set "PY="
@@ -19,27 +19,27 @@ for %%C in ("py -3" "python" "python3") do (
   )
 )
 if not defined PY (
-  echo [x] æ²¡æœ‰æ‰¾åˆ° Pythonï¼Œè¯·å…ˆå®‰è£… Python 3.8+ å¹¶å‹¾é€‰ Add to PATHã€‚
+  echo [x] Ã»ÓÐÕÒµ½ Python£¬ÇëÏÈ°²×° Python 3.8+ ²¢¹´Ñ¡ Add to PATH¡£
   pause
   exit /b 1
 )
 
 if not exist "%APP%\config.json" (
-  echo [!] è¿˜æ²¡æœ‰ config.jsonã€‚
-  echo     æŠŠ ç¤ºä¾‹é…ç½®\config-æ¡ˆä¾‹816.json å¤åˆ¶åˆ° ç¨‹åº\config.json å†è¿è¡Œæœ¬æ–‡ä»¶ã€‚
+  echo [!] »¹Ã»ÓÐ config.json¡£
+  echo     °Ñ Ê¾ÀýÅäÖÃ\config-°¸Àý816.json ¸´ÖÆµ½ ³ÌÐò\config.json ÔÙÔËÐÐ±¾ÎÄ¼þ¡£
   echo.
   pause
   exit /b 1
 )
 
 echo ============================================================
-echo   æ—§ç‰ˆæŽ§åˆ¶å°ï¼ˆè¿›é˜¶ï¼‰ï¼šhttp://127.0.0.1:%PORT%
-echo   æœåŠ¡èµ·æ¥åŽï¼Œæ‰‹åŠ¨åœ¨æµè§ˆå™¨è¾“å…¥ä¸Šé¢è¿™ä¸ªç½‘å€
-echo   å…³æŽ‰æœ¬çª—å£å³åœæ­¢æœåŠ¡
+echo   ¾É°æ¿ØÖÆÌ¨£¨½ø½×£©£ºhttp://127.0.0.1:%PORT%
+echo   ·þÎñÆðÀ´ºó£¬ÊÖ¶¯ÔÚä¯ÀÀÆ÷ÊäÈëÉÏÃæÕâ¸öÍøÖ·
+echo   ¹Øµô±¾´°¿Ú¼´Í£Ö¹·þÎñ
 echo ============================================================
 echo.
 pushd "%APP%"
-%PY% -u ç¨‹åº\app\server.py --port %PORT%
+%PY% -u app\server.py --port %PORT%
 popd
 echo.
 pause

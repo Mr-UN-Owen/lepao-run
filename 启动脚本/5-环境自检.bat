@@ -1,13 +1,13 @@
 @echo off
-chcp 65001 >nul
-set "PYTHONIOENCODING=utf-8"
+chcp 936 >nul
+set "PYTHONIOENCODING=gbk"
 rem ============================================================
-rem  æ ¡å›­è·‘åè®®ç ”ç©¶ / çŽ¯å¢ƒè‡ªæ£€
-rem  æ¢ç”µè„‘ã€è£…å®Œ Python åŽå…ˆè·‘è¿™ä¸ªï¼Œå…¨ç»¿å†å¾€ä¸‹èµ°
+rem  Ð£Ô°ÅÜÐ­ÒéÑÐ¾¿ / »·¾³×Ô¼ì
+rem  »»µçÄÔ¡¢×°Íê Python ºóÏÈÅÜÕâ¸ö£¬È«ÂÌÔÙÍùÏÂ×ß
 rem ============================================================
 setlocal
 cd /d "%~dp0.."
-set "APP=%CD%\ç¨‹åº"
+set "APP=%CD%\³ÌÐò"
 
 set "PY="
 for %%C in ("py -3" "python" "python3") do (
@@ -17,19 +17,19 @@ for %%C in ("py -3" "python" "python3") do (
   )
 )
 if not defined PY (
-  echo [x] æ²¡æœ‰æ‰¾åˆ° Pythonï¼Œè¯·å…ˆå®‰è£… Python 3.8+ å¹¶å‹¾é€‰ Add to PATHã€‚
+  echo [x] Ã»ÓÐÕÒµ½ Python£¬ÇëÏÈ°²×° Python 3.8+ ²¢¹´Ñ¡ Add to PATH¡£
   pause
   exit /b 1
 )
 
 pushd "%APP%"
-%PY% -u ç¨‹åº\selfcheck.py
+%PY% -u selfcheck.py
 set "RC=%ERRORLEVEL%"
 popd
 echo.
 if "%RC%"=="0" (
-  echo è‡ªæ£€é€šè¿‡ï¼Œå¯ä»¥åŒå‡» 1-å¯åŠ¨ç½‘é¡µæŽ§åˆ¶å°.bat äº†ã€‚
+  echo ×Ô¼ìÍ¨¹ý£¬¿ÉÒÔË«»÷ 1-Æô¶¯ÍøÒ³¿ØÖÆÌ¨.bat ÁË¡£
 ) else (
-  echo ä¸Šé¢æœ‰ [X] é¡¹ï¼ŒæŒ‰æç¤ºå¤„ç†åŽå†è·‘ä¸€æ¬¡è‡ªæ£€ã€‚
+  echo ÉÏÃæÓÐ [X] Ïî£¬°´ÌáÊ¾´¦ÀíºóÔÙÅÜÒ»´Î×Ô¼ì¡£
 )
 pause

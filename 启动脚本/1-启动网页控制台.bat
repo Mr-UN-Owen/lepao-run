@@ -32,6 +32,10 @@ echo   本机网址: http://127.0.0.1:%PORT%
 echo   启动后浏览器会自动打开；关掉本窗口即停止服务
 echo ============================================================
 echo.
+rem ---- 启动前清掉指向本机的系统代理（避免残留导致断网）----
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul 2>&1
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable 2>nul | findstr /c:"0x0" >nul && (echo   已确认系统代理关闭) || (echo   [警告] 系统代理关闭失败，请手动运行 4-关闭系统代理-救急.bat)
+echo.
 pushd "%APP%"
 %PY% -u webapp\server.py --port %PORT% --open
 popd

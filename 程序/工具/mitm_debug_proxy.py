@@ -35,16 +35,48 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
-sys.path.insert(0, REPO)
+PROG = os.path.dirname(HERE)          # 程序/
+REPO = os.path.dirname(PROG)          # 工作区根（仅用于展示）
+sys.path.insert(0, PROG)
 from lepao.crypto import decrypt_data  # noqa: E402
 
-CA_DIR = os.path.join(REPO, "_private", "mitm_ca")
+PS_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+DATA_DIR = os.path.join(PROG, "_private")          # 运行时数据（已 gitignore）
+PROXY_BACKUP = os.path.join(DATA_DIR, "proxy_backup.json")
+
+
+def _restore_proxy_from_backup():
+    """MITM 自己退出时把代理恢复成启动前的值。
+
+    正常路径由 webapp 的 capture_stop 负责；这里是兜底：
+    用户直接关掉控制台窗口、或者 MITM 被单独结束时，避免代理留在死端口。
+    """
+    if not os.path.isfile(PROXY_BACKUP):
+        return
+    try:
+        import json as _json
+        import subprocess as _sp
+        d = _json.load(open(PROXY_BACKUP, encoding="utf-8"))
+        _sp.run(["reg", "add", PS_KEY, "/v", "ProxyEnable", "/t", "REG_DWORD",
+                 "/d", str(int(d.get("enable", 0))), "/f"],
+                capture_output=True, timeout=10)
+        if d.get("server") is not None:
+            _sp.run(["reg", "add", PS_KEY, "/v", "ProxyServer", "/t", "REG_SZ",
+                     "/d", str(d["server"]), "/f"], capture_output=True, timeout=10)
+        try:
+            os.remove(PROXY_BACKUP)
+        except OSError:
+            pass
+        print("[mitm] 已恢复系统代理（退出兜底）")
+    except Exception:
+        pass
+
+CA_DIR = os.path.join(DATA_DIR, "mitm_ca")
 LEAF_DIR = os.path.join(CA_DIR, "leaf")
 CA_KEY = os.path.join(CA_DIR, "ca.key")
 CA_CRT = os.path.join(CA_DIR, "ca.crt")
 CA_PEM = os.path.join(CA_DIR, "ca.pem")
-LOG = os.path.join(REPO, "_private", "capture_log.jsonl")
+LOG = os.path.join(DATA_DIR, "capture_log.jsonl")
 OPENSSL = "openssl"
 
 KEYS = ("school_id", "uid", "token", "student_num", "card_id", "term_id",
@@ -224,7 +256,7 @@ def save_upload(host, path, head_b, body):
     if b"multipart/form-data" not in low:
         return
     ts = time.strftime("%H%M%S")
-    out = os.path.join(REPO, "_private", f"upload_{ts}.bin")
+    out = os.path.join(DATA_DIR, f"upload_{ts}.bin")
     try:
         with open(out, "wb") as f:
             f.write(body)
@@ -461,6 +493,15 @@ def serve(host="127.0.0.1", port=8081):
 
 
 def main():
+    import atexit
+    import signal
+    atexit.register(_restore_proxy_from_backup)
+    for sig in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        try:
+            signal.signal(getattr(signal, sig),
+                          lambda *a: (_restore_proxy_from_backup(), sys.exit(0)))
+        except Exception:
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", action="store_true", help="生成并安装 CA")
     ap.add_argument("--port", type=int, default=8081)

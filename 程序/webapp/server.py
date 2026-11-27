@@ -34,7 +34,8 @@ sys.path.insert(0, HERE)
 from lplib import Session, V3Error            # noqa: E402
 from lepao import crypto                      # noqa: E402
 
-SESSION_FILE = os.path.join(REPO, "_private", "webapp_session.json")
+DATA_DIR = os.path.join(REPO, "_private")
+SESSION_FILE = os.path.join(DATA_DIR, "webapp_session.json")
 INDEX = os.path.join(HERE, "index.html")
 
 S = {"sess": None, "lock": threading.Lock()}
@@ -55,6 +56,43 @@ def save_session(sess):
     }
     with open(SESSION_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
+
+
+def fix_stuck_proxy(verbose=True):
+    """启动自检：代理指着本机某端口、但那个端口没人监听 → 自动关掉。
+
+    场景：上次抓包时用户直接关掉控制台窗口，MITM 被强杀，finally 没跑，
+    代理就留在 127.0.0.1:8086 这个死端口上，整机等于断网。
+    """
+    try:
+        cur = _read_proxy()
+    except Exception:
+        return None
+    if not cur.get("enable"):
+        return None
+    server = (cur.get("server") or "").strip()
+    if not server:
+        return None
+    host, _, port_s = server.rpartition(":")
+    host = host.strip() or "127.0.0.1"
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    try:
+        port = int(port_s)
+    except ValueError:
+        return None
+    if _port_open(port):
+        return None                       # 有人在监听，不动
+    try:
+        _write_proxy(0)
+        if verbose:
+            print(f"[lepao-webapp] 检测到残留代理 {server}（无进程监听），已自动关闭，网络恢复")
+        return server
+    except Exception as e:  # noqa: BLE001
+        if verbose:
+            print(f"[lepao-webapp] 检测到残留代理 {server}，但自动关闭失败：{e}")
+            print(f"[lepao-webapp] 请手动运行 启动脚本\\4-关闭系统代理-救急.bat")
+        return None
 
 
 def load_session():
@@ -144,7 +182,7 @@ def _port_open(port, timeout=0.4):
 
 
 def _log_lines():
-    path = os.path.join(REPO, "_private", "capture_log.jsonl")
+    path = os.path.join(DATA_DIR, "capture_log.jsonl")
     if not os.path.isfile(path):
         return []
     with open(path, encoding="utf-8") as f:
@@ -160,6 +198,15 @@ def capture_start(port=8086, skip_proxy=False):
         CAP["orig"] = _read_proxy()
         CAP["baseline"] = len(_log_lines())
         CAP["port"] = port
+        # 写一份代理备份：MITM 被强杀时由它自己恢复（关窗口兜底）
+        try:
+            import json as _json
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(os.path.join(DATA_DIR, "proxy_backup.json"), "w",
+                      encoding="utf-8") as _f:
+                _json.dump(CAP["orig"], _f, ensure_ascii=False)
+        except OSError:
+            pass
         env = dict(os.environ)
         env["PATH"] = r"D:\msys2\mingw64\bin;D:\msys2\usr\bin;" + env.get("PATH", "")
         env["PYTHONIOENCODING"] = "utf-8"
@@ -302,7 +349,7 @@ def _extract_cred(pl):
 
 def last_capture():
     """从抓包日志里翻出最近一条带 token 的 v3 明文，供登录页自动预填。"""
-    path = os.path.join(REPO, "_private", "capture_log.jsonl")
+    path = os.path.join(DATA_DIR, "capture_log.jsonl")
     if not os.path.isfile(path):
         return None
     best = None
@@ -929,6 +976,7 @@ def main():
     if s:
         S["sess"] = s
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
+    fix_stuck_proxy()
     print(f"[lepao-webapp] http://{a.host}:{a.port}  AES后端={crypto.backend()}")
     if s:
         print(f"[lepao-webapp] 已恢复会话 uid={s.uid} host={s.host}")
